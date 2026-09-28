@@ -365,14 +365,7 @@ async def update_team(
             update_fields.append("image_path = %s")
             params.append(image_path)
 
-        if not update_fields:
-            return {"success": True, "message": "No fields provided to update", "team_id": team_id}
-
-        params.append(team_id)
-        set_clause = ", ".join(update_fields)
-        cursor.execute(f"UPDATE teams SET {set_clause} WHERE team_id = %s", tuple(params))
-        conn.commit()
-
+        password_updated = False
         # Update Supabase Auth user password if provided
         if password and (emailId or existing_team.get("email_id")):
             try:
@@ -381,12 +374,27 @@ async def update_team(
                 target_email = emailId or existing_team.get("email_id")
                 users_res = supabase_admin.auth.admin.list_users()
                 for u in users_res:
-                    if u.email == target_email or u.user_metadata.get("team_id") == team_id:
+                    # Never accidentally update the admin's password!
+                    if u.user_metadata and u.user_metadata.get("role") == "admin":
+                        continue
+                        
+                    if u.email == target_email or (u.user_metadata and u.user_metadata.get("team_id") == team_id):
                         supabase_admin.auth.admin.update_user_by_id(u.id, {"password": password})
                         print(f"✅ Updated password for Supabase Auth user {u.email}")
+                        password_updated = True
                         break
             except Exception as auth_err:
                 print("⚠ Warning: Failed to update Supabase Auth User password:", auth_err)
+                raise HTTPException(status_code=400, detail=f"Failed to update password: {str(auth_err)}")
+
+        if not update_fields and not password_updated:
+            return {"success": True, "message": "No fields provided to update", "team_id": team_id}
+
+        if update_fields:
+            params.append(team_id)
+            set_clause = ", ".join(update_fields)
+            cursor.execute(f"UPDATE teams SET {set_clause} WHERE team_id = %s", tuple(params))
+            conn.commit()
 
         return {
             "success": True,
