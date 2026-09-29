@@ -462,7 +462,7 @@ async def delete_team(team_id: int, request: Request):
         cursor.execute("DELETE FROM sold_players WHERE team_id = %s", (team_id,))
         cursor.execute("DELETE FROM player_teams WHERE team_id = %s", (team_id,))
         cursor.execute("UPDATE captains SET team_id = NULL WHERE team_id = %s", (team_id,))
-        cursor.execute("UPDATE users SET team_id = NULL WHERE team_id = %s", (team_id,))
+        cursor.execute("DELETE FROM users WHERE team_id = %s", (team_id,))
 
         # Delete the team
         cursor.execute("DELETE FROM teams WHERE team_id = %s", (team_id,))
@@ -474,7 +474,9 @@ async def delete_team(team_id: int, request: Request):
             supabase_admin = get_supabase_admin_client()
             users_res = supabase_admin.auth.admin.list_users()
             for u in users_res:
-                if u.user_metadata.get("team_id") == team_id or (team.get("email_id") and u.email == team.get("email_id")):
+                if u.user_metadata and u.user_metadata.get("role") == "admin":
+                    continue
+                if (u.user_metadata and u.user_metadata.get("team_id") == team_id) or (team.get("email_id") and u.email == team.get("email_id")):
                     supabase_admin.auth.admin.delete_user(u.id)
                     print(f"✅ Deleted Supabase Auth User {u.email} for Team {team_id}")
                     break
