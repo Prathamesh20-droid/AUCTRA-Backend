@@ -273,14 +273,15 @@ async def get_current_auction(request: Request):
         # STEP 5: BID HISTORY
         cursor.execute("""
             SELECT 
+                b.id,
                 b.team_id,
                 t.name AS team_name,
                 b.bid_amount,
                 b.bid_time
-            FROM live_bids b
+            FROM bids b
             JOIN teams t ON b.team_id = t.team_id
             WHERE b.player_id = %s
-            ORDER BY b.bid_time ASC
+            ORDER BY b.bid_time ASC, b.id ASC
         """, (player_id,))
 
         history_raw = cursor.fetchall() or []
@@ -290,17 +291,21 @@ async def get_current_auction(request: Request):
         for row in history_raw:
 
             bt = row.get("bid_time")
-
-            bid_time_str = (
-                bt.strftime("%Y-%m-%d %H:%M:%S") if bt else None
-            )
+            if bt and isinstance(bt, datetime):
+                if bt.tzinfo is None:
+                    bt = bt.replace(tzinfo=timezone.utc)
+                bid_time_str = bt.isoformat()
+            else:
+                bid_time_str = str(bt) if bt else None
 
             history.append({
+                "id": row.get("id"),
                 "team_id": row["team_id"],
                 "team_name": row["team_name"],
-                "bid_amount": float(row["bid_amount"]),
+                "bid_amount": float(row["bid_amount"]) if isinstance(row["bid_amount"], Decimal) else row["bid_amount"],
                 "bid_time": bid_time_str,
             })
+
 
         return {
             "status": "auction_active",
@@ -896,14 +901,25 @@ async def auction_state(request: Request):
 
         # ---------------- BID HISTORY ----------------
         cursor.execute("""
-        SELECT b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
-        FROM live_bids b
+        SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+        FROM bids b
         JOIN teams t ON b.team_id = t.team_id
         WHERE b.player_id = %s
-        ORDER BY b.bid_time ASC
+        ORDER BY b.bid_time ASC, b.id ASC
         """, (player_id,))
 
-        history = cursor.fetchall()
+        history = cursor.fetchall() or []
+        for h in history:
+            if isinstance(h.get("bid_amount"), Decimal):
+                h["bid_amount"] = float(h["bid_amount"])
+            bt = h.get("bid_time")
+            if bt and isinstance(bt, datetime):
+                if bt.tzinfo is None:
+                    bt = bt.replace(tzinfo=timezone.utc)
+                h["bid_time"] = bt.isoformat()
+            elif bt:
+                h["bid_time"] = str(bt)
+
 
         current_bid = (
             float(highest_bid["bid_amount"])

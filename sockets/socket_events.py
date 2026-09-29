@@ -149,6 +149,26 @@ def register_socket_events():
             else:
                 remaining = int(auction.get("auction_duration") or 120)
 
+            # Fetch bid history from bids table
+            cursor.execute("""
+                SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                FROM bids b
+                JOIN teams t ON b.team_id = t.team_id
+                WHERE b.player_id = %s
+                ORDER BY b.bid_time ASC, b.id ASC
+            """, (auction["player_id"],))
+            status_history = cursor.fetchall() or []
+            for sh in status_history:
+                if isinstance(sh.get("bid_amount"), Decimal):
+                    sh["bid_amount"] = float(sh["bid_amount"])
+                bt = sh.get("bid_time")
+                if bt and isinstance(bt, datetime):
+                    if bt.tzinfo is None:
+                        bt = bt.replace(tzinfo=timezone.utc)
+                    sh["bid_time"] = bt.isoformat()
+                elif bt:
+                    sh["bid_time"] = str(bt)
+
             await sio.emit("auction_status", {
                 "status": "auction_active",
                 "player": {
@@ -167,9 +187,10 @@ def register_socket_events():
                     "team_id": top_bid["team_id"],
                     "team_name": top_bid["team_name"],
                     "bid_amount": float(top_bid.get("bid_amount") or 0)
-                } if top_bid else None
-
+                } if top_bid else None,
+                "history": status_history
             }, to=sid)
+
             
         except Exception as e:
             print("[Socket Error] join_auction error: ", e)
@@ -411,6 +432,7 @@ def register_socket_events():
                     (player_id, team_id, bid_amount, bid_time)
                     VALUES (%s,%s,%s,NOW())
                     ON CONFLICT (player_id) DO UPDATE SET
+                        team_id = EXCLUDED.team_id,
                         bid_amount = EXCLUDED.bid_amount,
                         bid_time = NOW()
                     """,
@@ -472,26 +494,33 @@ def register_socket_events():
 
                 # ---------- FETCH BID HISTORY ----------
                 cursor.execute("""
-                SELECT b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
-                FROM live_bids b
+                SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                FROM bids b
                 JOIN teams t ON b.team_id = t.team_id
                 WHERE b.player_id = %s
-                ORDER BY b.bid_time ASC
+                ORDER BY b.bid_time ASC, b.id ASC
                 """, (active_player,))
 
-                history = cursor.fetchall()
+                history = cursor.fetchall() or []
 
                 for h in history:
-                    if isinstance(h["bid_amount"], Decimal):
+                    if isinstance(h.get("bid_amount"), Decimal):
                         h["bid_amount"] = float(h["bid_amount"])
 
                     if h.get("bid_time"):
-                        h["bid_time"] = h["bid_time"].isoformat()
+                        bt = h["bid_time"]
+                        if isinstance(bt, datetime):
+                            if bt.tzinfo is None:
+                                bt = bt.replace(tzinfo=timezone.utc)
+                            h["bid_time"] = bt.isoformat()
+                        else:
+                            h["bid_time"] = str(bt)
 
                 if highest:
                     highest_bid_amount = float(highest["bid_amount"])
                 else:
                     highest_bid_amount = base_price
+
 
 
                 #----------- Timer Extension On last Second Bid --------------
