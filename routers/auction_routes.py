@@ -1450,9 +1450,10 @@ async def undo_sale(request: Request):
             WHERE team_id = %s
         """, (sold_price, winning_team_id))
 
-        cursor.execute("SELECT purse FROM teams WHERE team_id = %s", (winning_team_id,))
+        cursor.execute("SELECT name, purse FROM teams WHERE team_id = %s", (winning_team_id,))
         team_row = cursor.fetchone()
-        updated_purse = float(team_row["purse"]) if team_row else 0.0
+        winning_team_name = team_row["name"] if team_row and team_row.get("name") else f"Team {winning_team_id}"
+        updated_purse = float(team_row["purse"]) if team_row and team_row.get("purse") is not None else 0.0
 
         # 2. Delete sold_players record
         cursor.execute("DELETE FROM sold_players WHERE player_id = %s", (target_player_id,))
@@ -1478,7 +1479,10 @@ async def undo_sale(request: Request):
                     player_info[k] = float(v)
 
         if not player_info:
-            player_info = {"id": target_player_id}
+            player_info = {"id": target_player_id, "name": "Player"}
+
+        player_name = player_info.get("name", "Player")
+        formatted_price = f"₹{int(sold_price):,}" if sold_price == int(sold_price) else f"₹{sold_price:,.2f}"
 
         # 5. Broadcast Socket Events
         winner_sid = team_sockets.get(winning_team_id)
@@ -1488,12 +1492,15 @@ async def undo_sale(request: Request):
         await sio.emit("undo_sale", {
             "player_id": target_player_id,
             "player": player_info,
+            "player_name": player_name,
             "team_id": winning_team_id,
+            "team_name": winning_team_name,
             "refunded_amount": sold_price,
-            "message": f"Sale of {player_info.get('name', 'player')} reversed."
+            "message": f"Sale of {player_name} to {winning_team_name} ({formatted_price}) was reversed by Admin."
         })
 
-        print(f"↩ Undo sale completed for player {target_player_id}. Refunded ₹{sold_price} to Team {winning_team_id}.")
+        print(f"↩ Undo sale completed for player {target_player_id}. Refunded {formatted_price} to {winning_team_name}.")
+
 
         return {
             "success": True,
