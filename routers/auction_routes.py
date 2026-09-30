@@ -1486,7 +1486,7 @@ async def undo_sale(request: Request):
         # 2. Delete sold_players record
         cursor.execute("DELETE FROM sold_players WHERE player_id = %s", (target_player_id,))
 
-        # 3. Clean current_auction, live_bids, and bids
+        # 3. Clean current_auction, live_bids, and historical bids
         cursor.execute("DELETE FROM current_auction WHERE player_id = %s", (target_player_id,))
         cursor.execute("DELETE FROM live_bids WHERE player_id = %s", (target_player_id,))
         cursor.execute("DELETE FROM bids WHERE player_id = %s", (target_player_id,))
@@ -1595,7 +1595,7 @@ async def restart_player(request: Request):
         if active:
             stop_timer_task(active["player_id"])
 
-        #2. clear current auction & live bids table
+        #2. clear current auction, live bids, and historical bids for the player
         cursor.execute("DELETE FROM current_auction")
         cursor.execute("DELETE FROM live_bids")
         cursor.execute("DELETE FROM bids WHERE player_id = %s", (player_id,))
