@@ -32,7 +32,14 @@ def verify_token(token: str):
         
         # Only attempt local decode if algorithm is symmetric HMAC
         if token_alg.startswith("HS"):
-            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256", "HS384", "HS512"], options={"verify_aud": False})
+            import time
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256", "HS384", "HS512"], options={"verify_aud": False, "verify_exp": False})
+            
+            # Allow a 12-hour grace period for the auction duration since frontend doesn't auto-refresh
+            if payload.get("exp") and payload["exp"] < time.time() - (12 * 3600):
+                print("[Auth Info] Session token has expired beyond 12-hour grace period.")
+                return None
+
             role = (
                 payload.get("app_metadata", {}).get("role") or 
                 payload.get("user_metadata", {}).get("role") or 
