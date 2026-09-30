@@ -93,7 +93,30 @@ def check_auth(request: Request):
     if not payload:
         return {"authenticated": False}
     
+    user_data = dict(payload)
+    team_id = payload.get("team_id")
+    if team_id:
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "SELECT team_id, name, purse, image_path FROM teams WHERE team_id = %s",
+                    (int(team_id),)
+                )
+                team_row = cursor.fetchone()
+                if team_row:
+                    user_data["team_id"] = int(team_row["team_id"])
+                    user_data["team_name"] = team_row["name"]
+                    user_data["team_purse"] = float(team_row["purse"]) if team_row["purse"] is not None else 0.0
+                    user_data["team_logo"] = team_row["image_path"]
+            except Exception as e:
+                print("[Auth Error] check_auth team query failed:", e)
+            finally:
+                cursor.close()
+                conn.close()
+
     return {
         "authenticated": True,
-        "user": payload
+        "user": user_data
     }

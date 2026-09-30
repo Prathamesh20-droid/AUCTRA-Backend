@@ -81,11 +81,26 @@ def register_socket_events():
         team_id = None
 
         if data:
-            team_id = data.get("team_id")  
+            team_id = data.get("team_id")
 
-        #map only team sockets
+        if not team_id:
+            try:
+                session = await sio.get_session(sid) or {}
+                user = session.get("user") or {}
+                team_id = user.get("team_id")
+            except Exception:
+                pass
+
+        if team_id is not None:
+            try:
+                team_id = int(team_id)
+            except (ValueError, TypeError):
+                pass
+
+        # Map team socket (both int and str keys for lookup safety)
         if team_id:
             team_sockets[team_id] = sid
+            team_sockets[str(team_id)] = sid
             print(f"Team {team_id} mapped to socket {sid}")
         else:
             print("Admin joined auction (no team mapping)")
@@ -94,11 +109,30 @@ def register_socket_events():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         try:
+            # Always query team purse if team_id is present
+            updated_purse = 0.0
+            if team_id:
+                cursor.execute(
+                    "SELECT purse, name FROM teams WHERE team_id=%s",
+                    (team_id,)
+                )
+                team_row = cursor.fetchone()
+                if team_row:
+                    updated_purse = float(team_row["purse"]) if team_row.get("purse") is not None else 0.0
+                    await sio.emit("purse_update", {
+                        "purse": updated_purse,
+                        "team_id": team_id,
+                        "team_name": team_row.get("name")
+                    }, to=sid)
+
             cursor.execute("""
                 SELECT
                     ca.player_id,
+                    ca.start_time,
                     ca.expires_at,
                     ca.auction_duration,
+                    ca.paused,
+                    ca.paused_remaining,
                     p.name,
                     p.image_path,
                     p.base_price,
@@ -120,12 +154,6 @@ def register_socket_events():
                     to = sid
                 )
                 return
-            cursor.execute(
-                "SELECT purse FROM teams WHERE team_id=%s",
-                (team_id,)
-            )
-            row = cursor.fetchone()
-            updated_purse = float(row["purse"]) if row else 0
             #Fetch highest bid
             cursor.execute("""
                 SELECT b.team_id,t.name AS team_name, b.bid_amount
@@ -138,25 +166,39 @@ def register_socket_events():
 
             top_bid = cursor.fetchone()
 
-            # Calculate remaining seconds
-            expires_at = auction.get("expires_at")
-            if expires_at:
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-                remaining = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+            # Calculate remaining seconds & paused state
+            is_paused = bool(auction.get("paused"))
+            if is_paused:
+                remaining = int(auction.get("paused_remaining") or 0)
             else:
-                remaining = int(auction.get("auction_duration") or 120)
+                expires_at = auction.get("expires_at")
+                if expires_at:
+                    if isinstance(expires_at, str):
+                        expires_at = datetime.fromisoformat(expires_at)
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    remaining = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+                else:
+                    remaining = int(auction.get("auction_duration") or 120)
 
-            # Fetch bid history from bids table
-            cursor.execute("""
-                SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
-                FROM bids b
-                JOIN teams t ON b.team_id = t.team_id
-                WHERE b.player_id = %s
-                ORDER BY b.bid_time ASC, b.id ASC
-            """, (auction["player_id"],))
+            # Fetch bid history from bids table (only for current auction session)
+            start_time = auction.get("start_time")
+            if start_time:
+                cursor.execute("""
+                    SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                    FROM bids b
+                    JOIN teams t ON b.team_id = t.team_id
+                    WHERE b.player_id = %s AND b.bid_time >= %s
+                    ORDER BY b.bid_time ASC, b.id ASC
+                """, (auction["player_id"], start_time))
+            else:
+                cursor.execute("""
+                    SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                    FROM bids b
+                    JOIN teams t ON b.team_id = t.team_id
+                    WHERE b.player_id = %s
+                    ORDER BY b.bid_time ASC, b.id ASC
+                """, (auction["player_id"],))
             status_history = cursor.fetchall() or []
             for sh in status_history:
                 if isinstance(sh.get("bid_amount"), Decimal):
@@ -182,6 +224,7 @@ def register_socket_events():
                     "highest_runs": auction.get("highest_runs") or 0
                 },
                 "remaining_seconds": remaining,
+                "paused": is_paused,
                 "team_purse": updated_purse,
                 "highest_bid": {
                     "team_id": top_bid["team_id"],
@@ -492,14 +535,27 @@ def register_socket_events():
                     if isinstance(highest["team_id"], Decimal):
                         highest["team_id"] = int(highest["team_id"])
 
-                # ---------- FETCH BID HISTORY ----------
-                cursor.execute("""
-                SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
-                FROM bids b
-                JOIN teams t ON b.team_id = t.team_id
-                WHERE b.player_id = %s
-                ORDER BY b.bid_time ASC, b.id ASC
-                """, (active_player,))
+                # ---------- FETCH BID HISTORY (current session only) ----------
+                cursor.execute("SELECT start_time FROM current_auction WHERE player_id = %s LIMIT 1", (active_player,))
+                ca_info = cursor.fetchone()
+                start_time = ca_info.get("start_time") if ca_info else None
+
+                if start_time:
+                    cursor.execute("""
+                    SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                    FROM bids b
+                    JOIN teams t ON b.team_id = t.team_id
+                    WHERE b.player_id = %s AND b.bid_time >= %s
+                    ORDER BY b.bid_time ASC, b.id ASC
+                    """, (active_player, start_time))
+                else:
+                    cursor.execute("""
+                    SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+                    FROM bids b
+                    JOIN teams t ON b.team_id = t.team_id
+                    WHERE b.player_id = %s
+                    ORDER BY b.bid_time ASC, b.id ASC
+                    """, (active_player,))
 
                 history = cursor.fetchall() or []
 

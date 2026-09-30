@@ -106,6 +106,7 @@ async def start_auction(data: StartAuctionRequest, request: Request):
 
         cursor.execute("DELETE FROM current_auction")
         cursor.execute("DELETE FROM live_bids")
+        cursor.execute("DELETE FROM bids WHERE player_id = %s", (player_id,))
 
         # -------- INSERT CURRENT AUCTION --------
 
@@ -270,19 +271,34 @@ async def get_current_auction(request: Request):
 
             team_balance = float(team["purse"]) if team else 0
 
-        # STEP 5: BID HISTORY
-        cursor.execute("""
-            SELECT 
-                b.id,
-                b.team_id,
-                t.name AS team_name,
-                b.bid_amount,
-                b.bid_time
-            FROM bids b
-            JOIN teams t ON b.team_id = t.team_id
-            WHERE b.player_id = %s
-            ORDER BY b.bid_time ASC, b.id ASC
-        """, (player_id,))
+        # STEP 5: BID HISTORY (only for current auction session)
+        start_time = auction.get("start_time")
+        if start_time:
+            cursor.execute("""
+                SELECT 
+                    b.id,
+                    b.team_id,
+                    t.name AS team_name,
+                    b.bid_amount,
+                    b.bid_time
+                FROM bids b
+                JOIN teams t ON b.team_id = t.team_id
+                WHERE b.player_id = %s AND b.bid_time >= %s
+                ORDER BY b.bid_time ASC, b.id ASC
+            """, (player_id, start_time))
+        else:
+            cursor.execute("""
+                SELECT 
+                    b.id,
+                    b.team_id,
+                    t.name AS team_name,
+                    b.bid_amount,
+                    b.bid_time
+                FROM bids b
+                JOIN teams t ON b.team_id = t.team_id
+                WHERE b.player_id = %s
+                ORDER BY b.bid_time ASC, b.id ASC
+            """, (player_id,))
 
         history_raw = cursor.fetchall() or []
 
@@ -641,6 +657,8 @@ async def process_next_auction_background(player_id, mode, session_id):
         duration = 120
         expires_at = start_time + timedelta(seconds=duration)
 
+        cursor.execute("DELETE FROM bids WHERE player_id = %s", (next_player["id"],))
+
         cursor.execute("""
             INSERT INTO current_auction (player_id, start_time, expires_at, auction_duration, mode)
             VALUES (%s, %s, %s, %s, %s)
@@ -789,8 +807,8 @@ async def cancel_auction(request: Request):
         stop_timer_task(player_id)
 
         cursor.execute("DELETE FROM current_auction WHERE player_id = %s", (player_id,))
-
         cursor.execute("DELETE FROM live_bids WHERE player_id = %s", (player_id,))
+        cursor.execute("DELETE FROM bids WHERE player_id = %s", (player_id,))
 
         conn.commit()
 
@@ -899,14 +917,24 @@ async def auction_state(request: Request):
 
         highest_bid = cursor.fetchone()
 
-        # ---------------- BID HISTORY ----------------
-        cursor.execute("""
-        SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
-        FROM bids b
-        JOIN teams t ON b.team_id = t.team_id
-        WHERE b.player_id = %s
-        ORDER BY b.bid_time ASC, b.id ASC
-        """, (player_id,))
+        # ---------------- BID HISTORY (only current session) ----------------
+        start_time = auction.get("start_time")
+        if start_time:
+            cursor.execute("""
+            SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+            FROM bids b
+            JOIN teams t ON b.team_id = t.team_id
+            WHERE b.player_id = %s AND b.bid_time >= %s
+            ORDER BY b.bid_time ASC, b.id ASC
+            """, (player_id, start_time))
+        else:
+            cursor.execute("""
+            SELECT b.id, b.team_id, t.name AS team_name, b.bid_amount, b.bid_time
+            FROM bids b
+            JOIN teams t ON b.team_id = t.team_id
+            WHERE b.player_id = %s
+            ORDER BY b.bid_time ASC, b.id ASC
+            """, (player_id,))
 
         history = cursor.fetchall() or []
         for h in history:
@@ -1458,9 +1486,10 @@ async def undo_sale(request: Request):
         # 2. Delete sold_players record
         cursor.execute("DELETE FROM sold_players WHERE player_id = %s", (target_player_id,))
 
-        # 3. Clean current_auction and live_bids
+        # 3. Clean current_auction, live_bids, and bids
         cursor.execute("DELETE FROM current_auction WHERE player_id = %s", (target_player_id,))
         cursor.execute("DELETE FROM live_bids WHERE player_id = %s", (target_player_id,))
+        cursor.execute("DELETE FROM bids WHERE player_id = %s", (target_player_id,))
 
         conn.commit()
 
@@ -1568,7 +1597,8 @@ async def restart_player(request: Request):
 
         #2. clear current auction & live bids table
         cursor.execute("DELETE FROM current_auction")
-        cursor.execute("DELEtE FROM live_bids")
+        cursor.execute("DELETE FROM live_bids")
+        cursor.execute("DELETE FROM bids WHERE player_id = %s", (player_id,))
 
         #3. Clean player from unsold_players if present
         cursor.execute("DELETE FROM unsold_players WHERE player_id = %s", (player_id,))
