@@ -109,10 +109,8 @@ async def background_timer(player_id, mode, session_id):
         db_expires_check = auction.get("expires_at")
         if db_expires_check:
             if isinstance(db_expires_check, str):
-                from datetime import datetime, timezone
                 db_expires_check = datetime.fromisoformat(db_expires_check)
             if db_expires_check.tzinfo is None:
-                from datetime import timezone
                 db_expires_check = db_expires_check.replace(tzinfo=timezone.utc)
             if (db_expires_check - datetime.now(timezone.utc)).total_seconds() > 0:
                 print(f"⏳ Timer was extended at the last millisecond for player {player_id}. Resuming timer.")
