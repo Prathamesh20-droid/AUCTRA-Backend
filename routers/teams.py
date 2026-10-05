@@ -462,7 +462,12 @@ async def delete_team(team_id: int, request: Request):
         cursor.execute("DELETE FROM sold_players WHERE team_id = %s", (team_id,))
         cursor.execute("DELETE FROM player_teams WHERE team_id = %s", (team_id,))
         cursor.execute("UPDATE captains SET team_id = NULL WHERE team_id = %s", (team_id,))
-        cursor.execute("DELETE FROM users WHERE team_id = %s", (team_id,))
+        
+        # Delete user by team_id or email to handle edge cases where team_id wasn't set in auth metadata
+        if team.get("email_id"):
+            cursor.execute("DELETE FROM users WHERE team_id = %s OR email = %s", (team_id, team.get("email_id")))
+        else:
+            cursor.execute("DELETE FROM users WHERE team_id = %s", (team_id,))
 
         # Delete the team
         cursor.execute("DELETE FROM teams WHERE team_id = %s", (team_id,))

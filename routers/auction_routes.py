@@ -1326,77 +1326,81 @@ async def mark_unsold(request: Request):
 
         print(f"⚠️ Player {player_info.get('name')} marked UNSOLD")
 
-        # Advance to next player
-        print("⏳ Waiting 10 seconds before next player")
-        await asyncio.sleep(10)
+        async def _advance_next_player(m_mode, m_session_id):
+            print("⏳ Waiting 10 seconds before next player")
+            await asyncio.sleep(10)
 
-        cursor.execute("""
-            SELECT * FROM players
-            WHERE id NOT IN (
-                SELECT player_id FROM sold_players
-                UNION
-                SELECT player_id FROM unsold_players
-            )
-            ORDER BY RANDOM()
-            LIMIT 1
-        """)
-        next_player = cursor.fetchone()
+            new_conn = get_db_connection()
+            if not new_conn: return
+            new_cursor = new_conn.cursor(pymysql.cursors.DictCursor)
+            
+            try:
+                new_cursor.execute("""
+                    SELECT * FROM players
+                    WHERE id NOT IN (
+                        SELECT player_id FROM sold_players
+                        UNION
+                        SELECT player_id FROM unsold_players
+                    )
+                    ORDER BY RANDOM()
+                    LIMIT 1
+                """)
+                next_p = new_cursor.fetchone()
 
-        if not next_player:
-            print("🏁 Auction finished — all players processed")
-            await sio.emit("auction_finished", {"message": "All players processed"})
-            return {
-                "success": True,
-                "status": "auction_finished",
-                "message": "Player marked as UNSOLD, all players processed",
-                "player": player_info
-            }
+                if not next_p:
+                    print("🏁 Auction finished — all players processed")
+                    await sio.emit("auction_finished", {"message": "All players processed"})
+                    return
+                
+                # CLEAN PREVIOUS HISTORY FOR THIS PLAYER
+                new_cursor.execute("DELETE FROM live_bids WHERE player_id=%s", (next_p["id"],))
+                new_cursor.execute("DELETE FROM bids WHERE player_id=%s", (next_p["id"],))
 
-        start_time = datetime.now(timezone.utc)
-        duration = 120
-        expires_at = start_time + timedelta(seconds=duration)
+                st_time = datetime.now(timezone.utc)
+                dur = 120
+                exp_at = st_time + timedelta(seconds=dur)
 
-        cursor.execute("""
-            INSERT INTO current_auction (player_id, start_time, expires_at, auction_duration, mode)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (next_player["id"], start_time, expires_at, duration, mode))
-        conn.commit()
+                new_cursor.execute("""
+                    INSERT INTO current_auction (player_id, start_time, expires_at, auction_duration, mode)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (next_p["id"], st_time, exp_at, dur, m_mode))
+                new_conn.commit()
 
-        await sio.emit("auction_started", {
-            "player": {
-                "id": next_player["id"],
-                "name": next_player["name"],
-                "image_path": next_player["image_path"],
-                "jersey": next_player["jersey"],
-                "category": next_player["category"],
-                "type": next_player["type"],
-                "base_price": float(next_player.get("base_price") or 0),
-                "highest_runs": next_player.get("highest_runs") or 0
-            },
-            "duration": duration,
-            "expires_at": expires_at.isoformat(),
-            "current_bid": float(next_player.get("base_price") or 0),
-            "history": []
-        })
+                await sio.emit("auction_started", {
+                    "player": {
+                        "id": next_p["id"],
+                        "name": next_p["name"],
+                        "image_path": next_p["image_path"],
+                        "jersey": next_p["jersey"],
+                        "category": next_p["category"],
+                        "type": next_p["type"],
+                        "base_price": float(next_p.get("base_price") or 0),
+                        "highest_runs": next_p.get("highest_runs") or 0
+                    },
+                    "duration": dur,
+                    "expires_at": exp_at.isoformat(),
+                    "current_bid": float(next_p.get("base_price") or 0),
+                    "history": []
+                })
 
-        asyncio.create_task(
-            background_timer(
-                next_player["id"],
-                mode,
-                session_id
-            )
-        )
-        print(f"🚀 Next auction started for {next_player['name']}")
+                asyncio.create_task(
+                    background_timer(next_p["id"], m_mode, m_session_id)
+                )
+                print(f"🚀 Next auction started for {next_p['name']}")
+                
+            except Exception as e:
+                print("❌ Error in _advance_next_player:", e)
+                new_conn.rollback()
+            finally:
+                new_cursor.close()
+                new_conn.close()
+
+        asyncio.create_task(_advance_next_player(mode, session_id))
 
         return {
             "success": True,
             "message": "Player marked as UNSOLD",
-            "player": player_info,
-            "next_player": {
-                "id": next_player["id"],
-                "name": next_player["name"],
-                "expires_at": expires_at.isoformat()
-            }
+            "player": player_info
         }
 
     except Exception as e:

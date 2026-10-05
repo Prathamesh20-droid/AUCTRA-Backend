@@ -21,11 +21,27 @@ def create_access_token(data: dict):
 
     return token
 
+_jwks_cache = None
+
+def get_jwks():
+    global _jwks_cache
+    if _jwks_cache is None:
+        jwks_url = os.getenv("SUPABASE_JWKS_URL")
+        if jwks_url:
+            import urllib.request
+            import json
+            try:
+                req = urllib.request.urlopen(jwks_url)
+                _jwks_cache = json.loads(req.read())
+            except Exception as e:
+                print(f"[Auth Error] Failed to fetch JWKS: {e}")
+    return _jwks_cache
+
 def verify_token(token: str):
     if not token:
         return None
         
-    # 1. Attempt fast local verification if token algorithm is HS256/HS384/HS512
+    # 1. Attempt fast local verification if token algorithm is HS/RS/ES
     try:
         header = jwt.get_unverified_header(token)
         token_alg = header.get("alg", "HS256")
@@ -36,13 +52,10 @@ def verify_token(token: str):
 
         if token_alg.startswith("HS"):
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256", "HS384", "HS512"], options={"verify_aud": False, "verify_exp": False})
-        elif token_alg.startswith("RS"):
-            from jwt import PyJWKClient
-            jwks_url = os.getenv("SUPABASE_JWKS_URL")
-            if jwks_url:
-                jwks_client = PyJWKClient(jwks_url)
-                signing_key = jwks_client.get_signing_key_from_jwt(token)
-                payload = jwt.decode(token, signing_key.key, algorithms=["RS256", "RS384", "RS512"], options={"verify_aud": False, "verify_exp": False})
+        elif token_alg.startswith("RS") or token_alg.startswith("ES"):
+            jwks = get_jwks()
+            if jwks:
+                payload = jwt.decode(token, jwks, algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"], options={"verify_aud": False, "verify_exp": False})
 
         if payload:
             # Allow a 12-hour grace period for the auction duration since frontend doesn't auto-refresh

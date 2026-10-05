@@ -484,6 +484,28 @@ def register_socket_events():
                     )
                     return
 
+                #----------- Timer Extension On last Second Bid --------------
+                if expires_at_val:
+                    remaining = (expires_at_val - datetime.now(timezone.utc)).total_seconds()
+                else:
+                    remaining = 0
+
+                extended_timer = False
+                if remaining <= 10:
+                    cursor.execute("""
+                    UPDATE current_auction
+                    SET expires_at = expires_at + INTERVAL '30 seconds'
+                    WHERE player_id = %s
+                    """, (active_player,))
+                    extended_timer = True
+
+                    # Update in-memory timer expiry so background_timer picks it up instantly                                        
+                    from auction.auction_engine import auction_expiry                                                                
+                    if active_player in auction_expiry:                                                                              
+                        auction_expiry[active_player] += timedelta(seconds=30)                                                       
+
+                    print("[Socket] Auction timer extended by 30 seconds")
+
                 # ---------------- INSERT LIVE BID ----------------
                 cursor.execute(
                     """
@@ -519,6 +541,12 @@ def register_socket_events():
                 conn.commit()
 
                 print(f"[Socket] Bid accepted: Team {team_id} -> {bid_amount}")
+                
+                if extended_timer:
+                    await sio.emit("timer_update", {                                                                                 
+                        "remaining_seconds": int((auction_expiry[active_player] - datetime.now(timezone.utc)).total_seconds()),      
+                        "extended": True                                                                                             
+                    })
 
                 # ---------------- ACK TO BIDDER ----------------
                 await sio.emit(
@@ -593,46 +621,6 @@ def register_socket_events():
                 else:
                     highest_bid_amount = base_price
 
-
-
-                #----------- Timer Extension On last Second Bid --------------
-                cursor.execute("""
-                SELECT expires_at
-                FROM current_auction
-                LIMIT 1
-                """)
-
-                row = cursor.fetchone()
-
-                if row:
-                    expires_at = row["expires_at"]
-
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-                    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
-                else:
-                    remaining = 0
-
-                if remaining <= 10:
-                    cursor.execute("""
-                    UPDATE current_auction
-                    SET expires_at = expires_at + INTERVAL '30 seconds'
-                    WHERE player_id = %s
-                    """, (active_player,))
-                    conn.commit()
-
-                    
-                    # Update in-memory timer expiry so background_timer picks it up instantly                                        
-                    from auction.auction_engine import auction_expiry                                                                
-                    if active_player in auction_expiry:                                                                              
-                        auction_expiry[active_player] += timedelta(seconds=30)                                                       
-
-                    print("[Socket] Auction timer extended by 30 seconds")                                                           
-                    await sio.emit("timer_update", {                                                                                 
-                        "remaining_seconds": int((auction_expiry[active_player] - datetime.now(timezone.utc)).total_seconds()),      
-                        "extended": True                                                                                             
-                    })
                 # ---------- BROADCAST UPDATE ----------
                 await sio.emit("auction_update", {
                     "player_id": active_player,

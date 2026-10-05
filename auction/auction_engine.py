@@ -232,6 +232,10 @@ async def background_timer(player_id, mode, session_id):
         if conn:
             conn.commit()
 
+    except Exception as e:
+        print(f"[Timer Error] Error during auction expiration for player {player_id}:", e)
+        if conn:
+            conn.rollback()
     finally:
         if cursor:
             cursor.close()
@@ -267,6 +271,9 @@ async def background_timer(player_id, mode, session_id):
             print("🏁 Auction finished")
             await sio.emit("auction_finished", {})
             return
+
+        cursor.execute("DELETE FROM live_bids WHERE player_id=%s", (next_player["id"],))
+        cursor.execute("DELETE FROM bids WHERE player_id=%s", (next_player["id"],))
 
         start_time = datetime.now(timezone.utc)
         duration = 120
