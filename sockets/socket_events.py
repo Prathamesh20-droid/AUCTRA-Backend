@@ -348,6 +348,22 @@ def register_socket_events():
                     )
                     return
 
+                expires_at_val = auction.get("expires_at")
+                if expires_at_val:
+                    if isinstance(expires_at_val, str):
+                        expires_at_val = datetime.fromisoformat(expires_at_val)
+                    if expires_at_val.tzinfo is None:
+                        expires_at_val = expires_at_val.replace(tzinfo=timezone.utc)
+                    
+                    remaining = (expires_at_val - datetime.now(timezone.utc)).total_seconds()
+                    if remaining <= 0:
+                        await sio.emit(
+                            "bid_rejected",
+                            {"error": "Auction has ended"},
+                            to=sid
+                        )
+                        return
+
                 active_player = auction["player_id"]
 
                 if str(player_id) != str(active_player):
@@ -598,7 +614,7 @@ def register_socket_events():
                 else:
                     remaining = 0
 
-                if 0 < remaining <= 10:
+                if remaining <= 10:
                     cursor.execute("""
                     UPDATE current_auction
                     SET expires_at = expires_at + INTERVAL '30 seconds'
