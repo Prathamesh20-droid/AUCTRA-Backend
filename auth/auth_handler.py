@@ -30,11 +30,21 @@ def verify_token(token: str):
         header = jwt.get_unverified_header(token)
         token_alg = header.get("alg", "HS256")
         
-        # Only attempt local decode if algorithm is symmetric HMAC
+        # Only attempt local decode if algorithm is symmetric HMAC or if we have JWKS for asymmetric
+        import time
+        payload = None
+
         if token_alg.startswith("HS"):
-            import time
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256", "HS384", "HS512"], options={"verify_aud": False, "verify_exp": False})
-            
+        elif token_alg.startswith("RS"):
+            from jwt import PyJWKClient
+            jwks_url = os.getenv("SUPABASE_JWKS_URL")
+            if jwks_url:
+                jwks_client = PyJWKClient(jwks_url)
+                signing_key = jwks_client.get_signing_key_from_jwt(token)
+                payload = jwt.decode(token, signing_key.key, algorithms=["RS256", "RS384", "RS512"], options={"verify_aud": False, "verify_exp": False})
+
+        if payload:
             # Allow a 12-hour grace period for the auction duration since frontend doesn't auto-refresh
             if payload.get("exp") and payload["exp"] < time.time() - (12 * 3600):
                 print("[Auth Info] Session token has expired beyond 12-hour grace period.")
@@ -56,7 +66,8 @@ def verify_token(token: str):
     except jwt.ExpiredSignatureError:
         print("[Auth Info] Session token has expired. User needs to log in again.")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[Auth Info] Local token verification failed ({e}). Falling back to Supabase API.")
         pass  # Fall through to Supabase Auth API verification
 
     # 2. Fallback to Supabase Auth API verification if local check fails
