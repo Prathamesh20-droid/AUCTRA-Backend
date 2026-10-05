@@ -393,7 +393,7 @@ def register_socket_events():
                 if float(team["purse"]) < bid_amount:
                     await sio.emit(
                         "bid_rejected",
-                        {"error": "Insufficient purse"},
+                        {"error": "Insufficient balance"},
                         to=sid
                     )
                     return
