@@ -69,8 +69,27 @@ def verify_token(token: str):
                 payload.get("role") or 
                 "team"
             )
+            
+            user_id = payload.get("sub")
+            if role == "team" and user_id:
+                try:
+                    from core.database import get_db_connection
+                    import pymysql
+                    conn = get_db_connection()
+                    if conn:
+                        cursor = conn.cursor(pymysql.cursors.DictCursor)
+                        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+                        user_in_db = cursor.fetchone()
+                        cursor.close()
+                        conn.close()
+                        if not user_in_db:
+                            print(f"[Auth Info] Team user {user_id} no longer exists in database. Rejecting token.")
+                            return None
+                except Exception as e:
+                    print(f"[Auth Warning] Could not verify user existence in DB: {e}")
+
             return {
-                "id": payload.get("sub"),
+                "id": user_id,
                 "email": payload.get("email"),
                 "role": role,
                 "team_id": payload.get("user_metadata", {}).get("team_id"),

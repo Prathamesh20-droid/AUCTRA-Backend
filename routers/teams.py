@@ -473,6 +473,17 @@ async def delete_team(team_id: int, request: Request):
         cursor.execute("DELETE FROM teams WHERE team_id = %s", (team_id,))
         conn.commit()
 
+        # Disconnect active socket if any
+        try:
+            from sockets.socket_manager import sio, team_sockets
+            import asyncio
+            sid_to_disconnect = team_sockets.get(team_id) or team_sockets.get(str(team_id))
+            if sid_to_disconnect:
+                asyncio.create_task(sio.disconnect(sid_to_disconnect))
+                print(f"[Socket Info] Disconnected socket {sid_to_disconnect} for deleted team {team_id}")
+        except Exception as socket_err:
+            print(f"[Socket Warning] Failed to disconnect team socket: {socket_err}")
+
         # Delete Supabase Auth User if exists
         try:
             from core.supabase_client import get_supabase_admin_client
